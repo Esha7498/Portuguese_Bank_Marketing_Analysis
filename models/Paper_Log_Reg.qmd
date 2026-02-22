@@ -1,0 +1,83 @@
+---
+title: "Paper_Log_Reg"
+format: html
+---
+
+Package Loading
+
+```{r include = FALSE}
+library(tidyverse)
+library(boot)
+library(ROCR)
+```
+
+Data loading
+
+```{r}
+bank <- read_delim("../data/bank-additional-full.csv", delim = ";", 
+                   show_col_types = FALSE) |> 
+  janitor::clean_names() |> 
+  mutate_if(is.character, as.factor)
+```
+
+## Data split
+
+```{r}
+set.seed(42)
+split <- sample(seq_len(nrow(bank)), size = floor(0.8*nrow(bank)))
+bankTrain <- bank[split,]
+bankTest <- bank[-split,]
+```
+
+## Note we do not have all of the variables used in paper. Attempting to fit a model that is similar here
+
+```{r}
+bank_lr_paper <- glm(y ~ housing + loan + default + month + emp_var_rate
+                     + cons_price_idx + cons_conf_idx + euribor3m + nr_employed,
+                     data = bankTrain, family = binomial)
+
+summary(bank_lr_paper)
+```
+
+### CV of model
+
+0-1 Loss function at threshold of 0.5
+
+```{r}
+loss <- function(Y, pred_p){
+  return(mean((Y==1 & pred_p < 0.5) | (Y==0 & pred_p >= 0.5)))
+}
+```
+
+#### K-Fold
+
+```{r}
+set.seed(42)
+bank_lr_paper_k_fold <- cv.glm(bankTrain, bank_lr_paper, cost = loss, K = 10)
+bank_lr_paper_k_fold$delta
+```
+
+### Confusion Matrix
+
+```{r}
+bankTest$pred_prob <- predict(bank_lr_paper, newdata = bankTest, type = "response")
+bankTest$pred_class <- ifelse(bankTest$pred_prob > 0.5, "yes", "no")
+table(bankTest$pred_class, bankTest$y)
+```
+
+### ROC Curve
+
+```{r}
+roc.predictions <- prediction(bankTest$pred_prob, bankTest$y)
+roc.perf <- performance(roc.predictions, "tpr", "fpr")
+
+plot(roc.perf, col = "blue", lwd = 2, main = "ROC", print.thres = TRUE)
+abline(a = 0, b = 1, col = "black", lty = 2)
+```
+
+#### AUC
+
+```{r}
+auc <- performance(roc.predictions, "auc")
+auc@y.values[[1]]
+```

@@ -1,0 +1,152 @@
+---
+title: "Trees"
+format: html
+---
+
+```{r include=FALSE}
+#package loading
+library(tidyverse)
+library(janitor)
+library(ROCR)
+library(tree)
+library(randomForest)
+```
+
+## 1. Data Loading and Cleaning
+
+```{r}
+bank <- read_delim("../data/bank-additional-full.csv", delim = ";", show_col_types = FALSE) |>
+  janitor::clean_names() |>
+  mutate_if(is.character, as.factor) 
+```
+
+## 2. Train-Test Split
+
+```{r}
+set.seed(42)
+split <- sample(seq_len(nrow(bank)), size = floor(0.8 * nrow(bank)))
+bankTrain <- bank[split, ]
+bankTest  <- bank[-split, ]
+```
+
+## 3. Paper-Style Decision Tree
+
+This tree uses primarily the economic predictors available to us in the data that best imitates the predictors used in the paper.
+
+```{r}
+bank_tree_paper <- tree(y ~ housing + loan + default + month + emp_var_rate +
+                          cons_price_idx + cons_conf_idx + euribor3m + nr_employed,
+                        data = bankTrain)
+summary(bank_tree_paper)
+```
+
+```{r}
+plot(bank_tree_paper)
+text(bank_tree_paper, pretty = 0)
+```
+
+Due to the small amount of $yes$ observations present in the data the tree algorithm decides the most optimal way to split is classifying every observation as $no$.
+
+## 4. Extending the tree Model
+
+This model seeks to include more variables to give better split options and hopefully create a tree that has at least a node that classifies an observation as $yes$.
+
+```{r}
+<<<<<<< HEAD
+bank_tree_extended <- tree(y ~ job + marital + education + housing + loan +
+                          month + day_of_week + campaign + emp_var_rate +
+                          cons_price_idx + cons_conf_idx + euribor3m + nr_employed,
+=======
+bank_tree_extended <- tree(y ~ .-duration,
+>>>>>>> origin/main
+                        data = bankTrain)
+summary(bank_tree_extended)
+```
+
+<<<<<<< HEAD
+Based on the summary alone, this is still creating the same tree as before. To lesson the impact of $month$ and $nr\_employed$ we will use a Random Forest.
+
+### Random Forest Model
+
+```{r}
+set.seed(42)
+bank_rf <- randomForest(y ~ job + marital + education + housing + loan +
+                          month + day_of_week + campaign + emp_var_rate +
+                          cons_price_idx + cons_conf_idx + euribor3m + nr_employed,
+=======
+```{r}
+plot(bank_tree_extended)
+text(bank_tree_extended, pretty = 0)
+```
+
+The extended tree using all predictors, minus $duration$, does improve over the baseline tree. However, it is still using very few variables. We will attempt to use a random forest to draw on more variables in the dataset.
+
+## 5. Random Forest Model
+
+```{r}
+set.seed(42)
+bank_rf <- randomForest(y ~ .-duration,
+>>>>>>> origin/main
+                        data = bankTrain, importance = TRUE)
+bank_rf
+```
+
+```{r}
+importance(bank_rf)
+```
+
+<<<<<<< HEAD
+From these results we can see a definite improvement over the previous trees. The Out-Of-Bag error rate is at $10.75\%$ indicating that there are trees in the random forest classifying observations as $yes$. This error rate is also lower than rate seen in the previous trees. Though it is important to note the high class error rate for $yes$ of $0.75$. The Random Forest has also decided on different variables as being important to the classification. It has placed $nr\_employed$ as the least important and $job$, $marital$, $education$, $housing$, and $loan$ all before $month$.
+
+#### Test prediction of random forest
+
+```{r}
+rf_preds <- predict(bank_rf, newdata = bankTest, type = "response")
+mean(rf_preds != bankTest$y)
+```
+
+The Out-Of-Bag estimation of error was very close for the random forest. As the test misclassification rate was $10.8\%$.
+=======
+From these results we can see an improvement over the previous trees. The Out-Of-Bag error rate is at $10.19\%$. Though it is important to note the high class error rate for $yes$ of $0.72$. The Random Forest has greatly expanded the variables used in the classification process, $nr\_employed$ has been determined to be the least important variable in the classification process.
+
+#### AUC of Random Forest
+
+```{r}
+rf_auc_preds <- predict(bank_rf, newdata = bankTest, type = "prob")[,2]
+roc.predictions <- prediction(rf_auc_preds, bankTest$y)
+roc.perf <- performance(roc.predictions, "tpr", "fpr")
+plot(roc.perf, col = "blue", lwd = 2, main = "ROC Curve – Random Forest")
+abline(a = 0, b = 1, col = "black", lty = 2)
+rf_auc <- performance(roc.predictions, "auc")@y.values[[1]]
+rf_auc
+```
+
+The AUC of the tree model results in $0.802$.
+
+### Test Error Rate of Random Forest and Extended Tree
+
+```{r}
+set.seed(42)
+rf_preds <- predict(bank_rf, newdata = bankTest, type = "class")
+mean(rf_preds != bankTest$y)
+```
+
+```{r}
+extended_preds <- predict(bank_tree_extended, newdata = bankTest, type = "class")
+mean(extended_preds != bankTest$y)
+```
+
+Interestingly the test misclassification error rate for the two trees is almost identical with the extended tree slightly edging out the random forest.
+
+## Tuning the Random Forest
+
+```{r}
+#Get design matrix
+bank_design <- model.matrix(bank_tree_extended)[,-1]
+
+set.seed(42)
+tuneRF(bank_design, bankTrain$y, mtryStart = 4, ntreeTry = 500, stepFactor = 1, plot = FALSE)
+```
+
+The tuning function is not showing any improvement over the default used in the original model, so we will leave it as is
+>>>>>>> origin/main

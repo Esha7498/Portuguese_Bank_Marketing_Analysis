@@ -1,0 +1,230 @@
+---
+title: "Stat 627 Project - Exploratory Data Analysis"
+author: "William Shields and Esha Teware"
+date: today
+format: pdf
+---
+
+```{r include=FALSE}
+# Package loading
+library(tidyverse)
+library(janitor)
+library(skimr)
+library(ggcorrplot)
+library(GGally)
+library(patchwork)
+library(tidyverse)
+library(caret)
+library(ROCR)
+```
+
+## Data Loading and Summary
+
+Overall we have four different csv files with data. For the purpose of EDA we are using the file with the most observations and variables.
+
+```{r}
+bank <- read_delim("../data/bank-additional-full.csv", delim = ";", 
+                   show_col_types = FALSE) %>%
+  clean_names() %>%
+  mutate_if(is.character, as.factor)
+
+head(bank)
+```
+
+Our dataset consists of 41188 observations of 21 variables. Ten of these variables are numeric, and the remaining 11 are categorical(this 11 includes the response). The response variable, $y$ is whether or not the client of the bank will subscribe a term deposit. This data comes from a Portuguese banking institution.
+
+### Variable Overview
+
+$age$: Age of contacted person
+
+$job$: Job of contacted person
+
+$marital$: Marital status of contacted person
+
+$education$: Highest education of contacted person
+
+$default$: If contacted has credit in default
+
+$housing$: If contacted has a housing loan
+
+$loan$: If contacted has personal loan
+
+$contact$: Method of contact(telephone = landline)
+
+$month$: Month of contact
+
+$day\_of\_week$: Day of week contacted
+
+$duration$: Length of contact in seconds (Note: highly effects value of $y$, should not be included in a model for realistic predictions)
+
+$campaign$: number of contacts performed during the campaign for this client(includes last contact)
+
+$pdays$: days passed since last contacted
+
+$previous$: number of contacts performed before this campaign
+
+$poutcome$: outcome of previous marketing campaign
+
+$emp\_var\_rate$: employment variation rate, updated quarterly
+
+$cons\_price\_index$: monthly average of consumer price index
+
+$cons\_conf\_index$: monthly average of consumer confidence index
+
+$euribor3m$: daily 3 month euro rate
+
+$nr\_employed$: quarterly average of the total number of employed citizens
+
+$y$: has the client subscribed a term deposit?
+
+## Missing values check
+
+```{r}
+bank %>%
+  summarise(across(everything(), ~ sum(is.na(.)))) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "missing_count") %>%
+  arrange(desc(missing_count))
+```
+
+No missing values are present in the dataset.
+
+## Overview of the response
+
+```{r}
+bank %>%
+  count(y) %>%
+  mutate(Percent = n / sum(n)) %>%
+  ggplot(aes(x = y, y = Percent, fill = y)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = scales::percent(Percent, accuracy = 0.1)), vjust = -0.5) +
+  labs(title = "Term Deposit Subscription Rate", x = "Subscribed (y)", y = "Proportion")
+```
+
+A significant majority of the observations in the data have the value of $no$ for the response variable.
+
+## Overview of Numeric Variables
+
+```{r}
+numeric_vars <- bank %>% select(where(is.numeric))
+skim(numeric_vars)
+```
+
+### Histograms of Numeric Variables
+
+```{r}
+numeric_vars %>%
+  pivot_longer(cols = everything(), names_to = "variable", values_to = "value") %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(bins = 30, fill = "#69b3a2", color = "white") +
+  facet_wrap(~variable, scales = "free", ncol = 3) +
+  labs(title = "Distributions of Numeric Variables", x = "Value", y = "Count")
+```
+
+### Correlation of Numeric Variables
+
+```{r}
+cor_matrix <- cor(numeric_vars)
+ggcorrplot(cor_matrix, type = "lower", lab = TRUE,
+           title = "Correlation Heatmap of Numeric Variables")
+```
+
+The pairs of, $euribor3m$ and $nr\_employed$, $euribor3m$ and $emp\_var\_rate$, $nr\_employed$ and $emp\_var\_rate$ are highly correlated. The values for these variables are the same across large groups of observations as they are economic indicators that change on either a quarterly( for $nr\_employed$ and $emp\_var\_rate$) or daily(for $euribor3m$) frequency.
+
+### Numeric Variables vs Response
+
+```{r}
+numeric_vars %>%
+  pivot_longer(cols = everything(), names_to = "variable", values_to = "value") %>%
+  mutate(y = rep(bank$y, times = length(numeric_vars))) %>%
+  ggplot(aes(x = y, y = value, fill = y)) +
+  geom_boxplot(alpha = 0.7, outlier.color = "red") +
+  facet_wrap(~variable, scales = "free", ncol = 3) +
+  labs(title = "Numeric Variables by Subscription Status", x = "Subscribed (y)", y = "Value")
+```
+
+## Overview of Categorical Variables
+
+### Frequency Plots of Categorical Variables
+
+```{r}
+cat_vars <- bank %>% select(where(is.factor)) %>% select(-y)
+
+cat_plot <- function(var) {
+  ggplot(bank, aes(x = .data[[var]], fill = .data[[var]])) +
+    geom_bar(show.legend = FALSE) +
+    labs(title = paste("Distribution of", var), x = var, y = "Count") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+
+map(cat_vars %>% names(), cat_plot)
+```
+
+Most categorical variable distributions appear to dominated by one or two levels. Note: Some levels appear to have zero recorded observations. In actuality they have so few they do not appear in this scale. For example, there are only three recorded observations of yes for $default$ in the entire dataset.
+
+### Categorical Variables vs Response
+
+```{r}
+cat_vs_target <- function(var) {
+  ggplot(bank, aes(x = .data[[var]], fill = y)) +
+    geom_bar(position = "fill") +
+    scale_y_continuous(labels = scales::percent) +
+    labs(title = paste("Subscription Rate by", var),
+         x = var, y = "Proportion of Subscriptions") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+
+map(cat_vars %>% names(), cat_vs_target)
+```
+
+As expected from looking at the frequency of the response earlier, most levels of our categorical variables primarily result in $no$ for the response. Notable differences are the increased amount of $yes$ in the months of December, March, October, and September. As well as the large number of $yes$ when $poutcome$ is $success$. $poutcome$ is the result of the previous marketing campaign with a customer, so it is not surprising that a customer who has subscribed for a term deposit before would be more likely to do so again.
+
+## Logistic Model with all Variables
+
+Example logistic regression model ran on all possible predictors.
+
+```{r}
+# Split 80/20 for train/test
+set.seed(123)
+train_index <- createDataPartition(bank$y, p = 0.8, list = FALSE)
+train <- bank[train_index, ]
+test <- bank[-train_index, ]
+```
+
+```{r}
+# Basic logistic model using all predictors
+logit_model <- glm(y ~ ., data = train, family = binomial)
+
+# View summary
+summary(logit_model)
+```
+
+### Predictions and Confusion Matrix
+
+```{r}
+# Predict probabilities and classes
+test$pred_prob <- predict(logit_model, newdata = test, type = "response")
+test$pred_class <- ifelse(test$pred_prob > 0.5, "yes", "no")
+
+# Confusion matrix
+confusionMatrix(factor(test$pred_class, levels = c("no", "yes")),
+                test$y, positive = "yes")
+```
+
+### ROC Curve
+
+```{r}
+
+roc.predictions <- prediction(test$pred_prob, test$y)
+
+roc.perf <- performance(roc.predictions, "tpr", "fpr")
+
+plot(roc.perf, col = "blue", lwd = 2, main = "ROC", print.thres = TRUE)
+abline(a = 0, b = 1, col = "black", lty = 2)
+```
+
+AUC:
+
+```{r}
+auc <- performance(roc.predictions, "auc")
+auc@y.values[[1]]
+```

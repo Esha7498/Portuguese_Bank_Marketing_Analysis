@@ -1,0 +1,163 @@
+---
+title: "Project_R"
+author: "Esha Teware"
+date: "2025-10-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+suppressMessages({
+  library(tidyverse)
+  library(janitor)
+  library(skimr)
+  library(ggcorrplot)
+  library(GGally)
+  library(patchwork)
+  library(tidyverse)
+  library(caret)
+  library(pROC)
+})
+
+#  Load and Clean Data 
+bank <- read_delim("../data/bank-additional-full.csv", delim = ";", show_col_types = FALSE) %>%
+  clean_names() %>%
+  mutate_if(is.character, as.factor)
+
+# Structure Overview 
+cat("\nData Dimensions:\n")
+print(dim(bank))
+cat("\nColumn Names:\n")
+print(names(bank))
+glimpse(bank)
+
+#  Missing Values
+missing_summary <- bank %>%
+  summarise(across(everything(), ~ sum(is.na(.)))) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "missing_count") %>%
+  arrange(desc(missing_count))
+
+print(missing_summary)
+
+# Target Variable Summary 
+bank %>%
+  count(y) %>%
+  mutate(Percent = n / sum(n)) %>%
+  ggplot(aes(x = y, y = Percent, fill = y)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = scales::percent(Percent, accuracy = 0.1)), vjust = -0.5) +
+  labs(title = "Term Deposit Subscription Rate", x = "Subscribed (y)", y = "Proportion")
+
+#  Numeric Variables Summary 
+numeric_vars <- bank %>% select(where(is.numeric))
+skim(numeric_vars)
+
+# Histograms for numeric variables
+num_hist <- numeric_vars %>%
+  pivot_longer(cols = everything(), names_to = "variable", values_to = "value") %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(bins = 30, fill = "#69b3a2", color = "white") +
+  facet_wrap(~variable, scales = "free", ncol = 3) +
+  labs(title = "Distributions of Numeric Variables", x = "Value", y = "Count")
+
+num_hist
+
+# Categorical Variables Summary 
+cat_vars <- bank %>% select(where(is.factor)) %>% select(-y)
+cat_summary <- cat_vars %>%
+  map(~ table(.)) %>%
+  map(~ prop.table(.)) 
+
+# Frequency plots
+cat_plot <- function(var) {
+  ggplot(bank, aes_string(x = var, fill = var)) +
+    geom_bar(show.legend = FALSE) +
+    labs(title = paste("Distribution of", var), x = var, y = "Count") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+
+map(cat_vars %>% names(), cat_plot)
+
+# Correlation Among Numeric Variables
+cor_matrix <- cor(numeric_vars)
+ggcorrplot(cor_matrix, type = "lower", lab = TRUE,
+           title = "Correlation Heatmap of Numeric Variables")
+
+# Numeric Variables vs Target
+num_box <- numeric_vars %>%
+  pivot_longer(cols = everything(), names_to = "variable", values_to = "value") %>%
+  mutate(y = rep(bank$y, times = length(numeric_vars))) %>%
+  ggplot(aes(x = y, y = value, fill = y)) +
+  geom_boxplot(alpha = 0.7, outlier.color = "red") +
+  facet_wrap(~variable, scales = "free", ncol = 3) +
+  labs(title = "Numeric Variables by Subscription Status", x = "Subscribed (y)", y = "Value")
+
+num_box
+
+# Categorical Variables vs Target 
+cat_vs_target <- function(var) {
+  ggplot(bank, aes_string(x = var, fill = "y")) +
+    geom_bar(position = "fill") +
+    scale_y_continuous(labels = scales::percent) +
+    labs(title = paste("Subscription Rate by", var),
+         x = var, y = "Proportion of Subscriptions") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+
+map(cat_vars %>% names(), cat_vs_target)
+
+# Key Insights Summary 
+eda_summary <- tibble(
+  Section = c("Data Shape", "Missing Values", "Target Balance", 
+              "Top Numeric Predictors", "Top Categorical Predictors", "Correlations"),
+  Findings = c("41,188 observations, 21 variables (10 numeric, 11 categorical)",
+               "No missing values detected",
+               "Highly imbalanced: ~11% 'yes' responses",
+               "duration, euribor3m, emp_var_rate vary strongly with y",
+               "contact, month, poutcome show clear relationship with y",
+               "euribor3m, emp_var_rate, nr_employed are highly correlated")
+)
+print(eda_summary)
+
+
+
+```
+
+```{r}
+
+# Split 80/20 for train/test (stratified on y)
+set.seed(123)
+train_index <- createDataPartition(bank$y, p = 0.8, list = FALSE)
+train <- bank[train_index, ]
+test  <- bank[-train_index, ]
+
+```
+
+```{r}
+# Basic logistic model using all predictors
+logit_model <- glm(y ~ ., data = train, family = binomial)
+
+# View summary
+summary(logit_model)
+
+```
+
+```{r}
+# Predict probabilities and classes
+test$pred_prob <- predict(logit_model, newdata = test, type = "response")
+test$pred_class <- ifelse(test$pred_prob > 0.5, "yes", "no")
+
+# Confusion matrix
+confusionMatrix(factor(test$pred_class, levels = c("no", "yes")),
+                test$y, positive = "yes")
+
+# ROC & AUC
+roc_obj <- roc(test$y, test$pred_prob)
+auc(roc_obj)
+plot(roc_obj, main = "ROC Curve - Baseline Logistic Regression")
+
+```

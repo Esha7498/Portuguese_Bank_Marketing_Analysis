@@ -1,0 +1,444 @@
+---
+title: "Model_update"
+format: html
+---
+
+## 1. Package Loading
+
+```{r include=FALSE}
+library(tidyverse)
+library(boot)
+library(ROCR)
+library(glmnet)
+library(MASS)
+library(caret)
+library(class)
+```
+
+## 2. Data Loading and Cleaning
+
+```{r}
+bank <- read_delim("../data/bank-additional-full.csv", delim = ";", show_col_types = FALSE) |>
+  janitor::clean_names() |>
+  mutate_if(is.character, as.factor) 
+  #select(-duration)  # duration excluded as it leaks outcome info
+```
+
+## 3. Train - Test Split
+
+```{r}
+set.seed(42)
+split <- sample(seq_len(nrow(bank)), size = floor(0.8 * nrow(bank)))
+bankTrain <- bank[split, ]
+bankTest  <- bank[-split, ]
+```
+
+## 4. Paper-Style Logistic Regression (Team Baseline Model)
+
+```{r}
+bank_lr_paper <- glm(y ~ housing + loan + default + month + emp_var_rate +
+                       cons_price_idx + cons_conf_idx + euribor3m + nr_employed,
+                     data = bankTrain, family = binomial)
+summary(bank_lr_paper)
+```
+
+### Cross-Validation (10-Fold)
+
+```{r}
+loss <- function(Y, pred_p){
+  mean((Y == 1 & pred_p < 0.5) | (Y == 0 & pred_p >= 0.5))
+}
+set.seed(42)
+bank_lr_paper_k_fold <- cv.glm(bankTrain, bank_lr_paper, cost = loss, K = 10)
+bank_lr_paper_k_fold$delta
+```
+
+### Test Performance
+
+```{r}
+bankTest$pred_prob <- predict(bank_lr_paper, newdata = bankTest, type = "response")
+bankTest$pred_class <- ifelse(bankTest$pred_prob > 0.5, "yes", "no")
+table(bankTest$pred_class, bankTest$y)
+```
+
+### ROC and AUC
+
+```{r}
+roc.predictions <- prediction(bankTest$pred_prob, bankTest$y)
+roc.perf <- performance(roc.predictions, "tpr", "fpr")
+plot(roc.perf, col = "blue", lwd = 2, main = "ROC Curve – Paper Logistic Model")
+abline(a = 0, b = 1, col = "black", lty = 2)
+paper_auc <- performance(roc.predictions, "auc")@y.values[[1]]
+paper_auc
+```
+
+## 5. Extended Logistic Regression (New addition)
+
+**Purpose of This Model**
+
+**Expand** it slightly by including **additional socio-demographic and campaign-related predictors** available in dataset, and
+
+**Evaluate** whether these extra categorical variables improve prediction accuracy (compared to the simpler “paper logistic” model that only used economic indicators).
+
+```{r}
+bank_lr_extended <- glm(y ~ job + marital + education + housing + loan +
+                          month + day_of_week + campaign + emp_var_rate +
+                          cons_price_idx + cons_conf_idx + euribor3m + nr_employed,
+                        data = bankTrain, family = binomial)
+summary(bank_lr_extended)
+
+bankTest$pred_prob_ext <- predict(bank_lr_extended, newdata = bankTest, type = "response")
+bankTest$pred_class_ext <- ifelse(bankTest$pred_prob_ext > 0.5, "yes", "no")
+table(bankTest$pred_class_ext, bankTest$y)
+
+roc.pred.ext <- prediction(bankTest$pred_prob_ext, bankTest$y)
+roc.perf.ext <- performance(roc.pred.ext, "tpr", "fpr")
+plot(roc.perf.ext, col = "green", lwd = 2, main = "ROC Curve – Extended Logistic")
+abline(a = 0, b = 1, col = "black", lty = 2)
+extended_auc <- performance(roc.pred.ext, "auc")@y.values[[1]]
+extended_auc
+```
+
+## Interpretation Summary
+
+The extended logistic model **captures temporal and economic patterns** effectively - showing that **month**, **day of week**, and **economic variables** are strong predictors of client behavior.
+
+However, the moderate AUC (≈ 0.79) and some insignificant socio-demographic coefficients indicate **limited improvement** over the baseline model.
+
+Multicollinearity among economic indicators and overlapping job/education effects likely reduce coefficient stability.
+
+The extended logistic regression model (AUC ≈ 0.79) demonstrated that adding campaign and socio-demographic variables improved baseline performance marginally, with significant effects for month, day-of-week, and key economic indicators, but regularization was still necessary to handle multicollinearity and improve predictive stability.
+
+## 6. Ridge and LASSO Logistic Regression
+
+**Purpose**
+
+-   **Multicollinearity** (correlated predictors)
+
+-   **Overfitting** (too many variables with small effects
+
+-   **Variable selection** (figuring out which predictors actually matter
+
+```{r}
+
+# Combine data first so model.matrix creates consistent columns
+x_all <- model.matrix(y ~ ., bank)[, -1]
+y_all <- ifelse(bank$y == "yes", 1, 0)
+
+# Use same split indices as before
+x_train <- x_all[split, ]
+x_test  <- x_all[-split, ]
+y_train <- y_all[split]
+y_test  <- y_all[-split]
+
+# Fit models
+ridge_cv <- cv.glmnet(x_train, y_train, alpha = 0, family = "binomial")
+lasso_cv <- cv.glmnet(x_train, y_train, alpha = 1, family = "binomial")
+
+# Predictions
+ridge_pred <- predict(ridge_cv, s = ridge_cv$lambda.min, newx = x_test, type = "response")
+lasso_pred <- predict(lasso_cv, s = lasso_cv$lambda.min, newx = x_test, type = "response")
+
+
+# Evaluate AUC
+ridge_auc <- performance(prediction(ridge_pred, y_test), "auc")@y.values[[1]]
+lasso_auc <- performance(prediction(lasso_pred, y_test), "auc")@y.values[[1]]
+
+c(Ridge_AUC = ridge_auc, LASSO_AUC = lasso_auc)
+
+```
+
+Our replicated Ridge and LASSO models achieved AUCs of 0.929 and 0.932, respectively - nearly identical to the benchmark reported by Moro, Cortez, and Rita (2014). This confirms that even with a reduced set of predictors, regularized logistic regression retains robust predictive accuracy and interpretability.
+
+**AUC ≈ 0.93** for LASSO and **0.929** for Ridge are **exceptionally strong** results.
+
+Our replication shows **comparable AUC (\~0.93)** even without campaign-history variables, validating that:
+
+**Economic conditions** and **client financial indicators** drive subscription behavior strongly.
+
+An AUC of 0.93 indicates that the model correctly ranks a randomly chosen subscriber above a non-subscriber 93% of the time, reflecting excellent discrimination performance. By applying cross-validation to tune the penalty parameter λ, both models effectively manage multicollinearity and overfitting.\
+Ridge regression stabilizes coefficients by shrinking them toward zero, while LASSO additionally performs variable selection, setting uninformative predictors to zero.\
+These results replicate the core findings of Moro et al. (2014), confirming that regularized logistic regression achieves high predictive power while maintaining interpretability.
+
+## 7. Discriminant Analysis (LDA & QDA)
+
+**Purpose**
+
+To confirm that the class boundary is approximately linear, and to show how a generative classifier performs relative to your tuned discriminative ones.
+
+```{r}
+lda_fit <- lda(y ~ ., data = bankTrain)
+lda_pred <- predict(lda_fit, newdata = bankTest)$class
+lda_acc <- mean(lda_pred == bankTest$y)
+
+#qda_fit <- qda(y ~ ., data = bankTrain)
+#qda_pred <- predict(qda_fit, newdata = bankTest)$class
+#qda_acc <- mean(qda_pred == bankTest$y)
+
+c(LDA_Accuracy = lda_acc)
+# , QDA_Accuracy = qda_acc
+```
+
+**Linear Discriminant Analysis (LDA)** achieved an accuracy of **0.907**, indicating strong classification performance.\
+A warning about collinearity appeared, which is expected given the high correlation between economic variables such as `emp_var_rate`, `euribor3m`, and `nr_employed`.\
+Despite this, the model produced stable results, suggesting that most class separation is indeed linear.\
+This aligns with Moro et al. (2014), where regularized logistic regression slightly outperformed discriminant analysis due to better handling of correlated predictors.
+
+## 8. KNN
+
+```{r}
+
+library(class)
+
+# Creating consistent matrices
+x_all <- model.matrix(y ~ ., data = bank)[, -1]
+y_all <- ifelse(bank$y == "yes", 1, 0)
+
+x_train <- x_all[split, ]
+x_test  <- x_all[-split, ]
+y_train <- y_all[split]
+y_test  <- y_all[-split]
+
+# Scale using training mean and SD
+x_train_scaled <- scale(x_train)
+x_test_scaled  <- scale(x_test,
+                        center = attr(x_train_scaled, "scaled:center"),
+                        scale  = attr(x_train_scaled, "scaled:scale"))
+
+# Trying several k values
+set.seed(42)
+k_values <- c(3, 5, 7, 9, 11)
+knn_acc <- sapply(k_values, function(k) {
+  pred <- knn(train = x_train_scaled, test = x_test_scaled, cl = y_train, k = k)
+  mean(pred == y_test)
+})
+knn_acc
+
+# Select best k
+best_k <- k_values[which.max(knn_acc)]
+best_k
+
+# Final model with best k
+knn_pred <- knn(train = x_train_scaled, test = x_test_scaled, cl = y_train, k = best_k)
+
+library(ROCR)
+
+# Convert to numeric for ROC
+knn_prob <- as.numeric(knn_pred)
+roc.knn <- prediction(knn_prob, y_test)
+roc.perf.knn <- performance(roc.knn, "tpr", "fpr")
+plot(roc.perf.knn, col = "purple", lwd = 2,
+     main = paste("ROC Curve – KNN (k =", best_k, ")"))
+abline(a = 0, b = 1, col = "gray", lty = 2)
+knn_auc <- performance(roc.knn, "auc")@y.values[[1]]
+knn_auc
+
+
+```
+
+KNN achieves high nominal accuracy due to class imbalance but a low AUC (0.64), confirming it’s not suitable for this high-dimensional marketing dataset. The underlying decision boundary is mostly linear, so regularized logistic regression remains the optimal approach.
+
+We won't be using it eventually.
+
+### 
+
+## 9. SVM
+
+```{r}
+## Support Vector Machines (SVM)
+
+library(e1071)
+library(ROCR)
+
+# Ensure response is a factor
+bankTrain$y <- as.factor(bankTrain$y)
+bankTest$y  <- as.factor(bankTest$y)
+
+```
+
+```{r}
+### Linear Kernel SVM
+
+# Fitting linear SVM with probability output
+svm.lin <- svm(
+  y ~ ., data = bankTrain,
+  kernel = "linear",
+  cost = 1,
+  probability = TRUE
+)
+
+summary(svm.lin)
+
+# Prediction on test data
+svm.lin.pred <- predict(svm.lin, newdata = bankTest, probability = TRUE)
+svm.lin.prob <- attr(svm.lin.pred, "probabilities")[, "yes"]
+
+# ROC and AUC
+roc.lin <- prediction(svm.lin.prob, bankTest$y)
+roc.perf.lin <- performance(roc.lin, "tpr", "fpr")
+
+plot(
+  roc.perf.lin, col = "blue", lwd = 2,
+  main = "ROC Curve – SVM (Linear)"
+)
+abline(a = 0, b = 1, lty = 2)
+
+svm_lin_auc <- performance(roc.lin, "auc")@y.values[[1]]
+svm_lin_auc
+
+```
+
+**Interpretation:**\
+The linear Support Vector Machine (SVM) model was fit with a cost parameter of 1 and produced an **AUC = 0.9287**, demonstrating excellent predictive accuracy on the test data.\
+The model used **6 564 support vectors** (3293 from the “no” class and 3271 from the “yes” class). These support vectors are the key training observations that define the maximum-margin hyperplane separating the two classes.
+
+Because the linear kernel constructs a single straight hyperplane, the model assumes that the “yes” and “no” responses can be separated by a mostly linear boundary.\
+The very high AUC confirms that this assumption holds for the bank-marketing dataset: most of the separation between subscribing and non-subscribing clients is explained by a linear combination of predictors.
+
+In comparison with other models: The **AUC ≈ 0.93** closely matches the performance of Ridge (0.929) and LASSO (0.932), showing that a large-margin linear classifier performs on par with regularized logistic regression.\
+- The SVM’s margin-based optimization provides similar predictive strength while being less sensitive to multicollinearity than ordinary logistic regression.
+
+Overall, the linear SVM validates that the dataset is largely **linearly separable**, with minimal gain expected from nonlinear kernels. It therefore serves as a strong, high-accuracy baseline before exploring the tuned radial kernel in the next section.
+
+```{r}
+### Tuning the Cost and Kernel (10-fold CV, reduced sample, I have explained below why i used reduced sample for this)
+
+set.seed(42)
+bankTrain_sub <- bankTrain[sample(nrow(bankTrain), 5000), ]
+
+svm.tune <- tune(
+  svm,
+  y ~ ., data = bankTrain_sub,
+  ranges = list(
+    kernel = c("linear", "radial"),
+    cost   = c(0.1, 1, 10)
+  )
+)
+
+summary(svm.tune)
+svm.tune$best.parameters
+
+```
+
+**Interpretation:**\
+To optimize the Support Vector Machine (SVM) model, a 10-fold cross-validation was performed on a representative 5000 observation subset of the training data.\
+The tuning grid compared two kernel types linear and radial (RBF), across cost values of 0.1, 1, and 10.\
+The cross-validation identified the radial kernel with cost = 10 as the best configuration, achieving a mean cross-validated accuracy of ≈ 92.1 % (error = 0.088) and low dispersion across folds.
+
+This result suggests that introducing a mild nonlinear boundary via the radial kernel provides a small improvement over the linear kernel, while maintaining excellent overall performance.\
+Because full-dataset tuning is computationally intensive, subsampling was applied only during the hyperparameter search; the final model was subsequently refit on the entire training set using these tuned values.
+
+Overall, the tuning confirms that a radial kernel with cost = 10 yields the lowest misclassification rate and will serve as the final SVM specification evaluated in the next section.
+
+```{r}
+### Final Tuned SVM (Radial Kernel, cost = 10)
+
+best.svm <- svm(
+  y ~ ., data = bankTrain,
+  kernel = "radial",
+  cost = 10,
+  probability = TRUE
+)
+
+svm.pred <- predict(best.svm, newdata = bankTest, probability = TRUE)
+svm.prob <- attr(svm.pred, "probabilities")[, "yes"]
+
+library(ROCR)
+roc.svm <- prediction(svm.prob, bankTest$y)
+roc.perf.svm <- performance(roc.svm, "tpr", "fpr")
+
+plot(
+  roc.perf.svm, col = "red", lwd = 2,
+  main = "ROC Curve – Tuned SVM (Radial, cost = 10)"
+)
+abline(a = 0, b = 1, lty = 2)
+
+svm_auc <- performance(roc.svm, "auc")@y.values[[1]]
+svm_auc
+
+```
+
+The ROC curve’s steep rise and high plateau show that tuned radial SVM distinguishes “yes” vs. “no” responses extremely well.
+
+**Interpretation:**\
+The tuned Support Vector Machine (SVM) with a radial kernel and cost = 10 achieved an AUC of **0.921**, confirming strong nonlinear classification performance.\
+Although its AUC is marginally lower than the linear SVM (0.929) and regularized logistic models (≈ 0.93), the difference is negligible, suggesting that the dataset is **mostly linearly separable** with only limited nonlinear interactions.\
+The result is consistent with Moro et al. (2014), who also found SVMs among the top-performing models but noted minimal gains over simpler linear approaches.
+
+# 10. Neural Network
+
+```{r}
+
+library(nnet)
+library(ROCR)
+
+# Make working copies (no re-splitting)
+bankTrain.nn <- bankTrain
+bankTest.nn  <- bankTest
+
+# Identify numeric predictors common to both data sets
+num_train <- names(which(sapply(bankTrain.nn, is.numeric)))
+num_test  <- names(which(sapply(bankTest.nn, is.numeric)))
+common_num <- intersect(num_train, num_test)
+
+# Scaling numeric predictors using training mean and sd
+train_scaled <- scale(bankTrain.nn[, common_num])
+test_scaled  <- scale(bankTest.nn[, common_num],
+                      center = attr(train_scaled, "scaled:center"),
+                      scale  = attr(train_scaled, "scaled:scale"))
+
+bankTrain.nn[, common_num] <- train_scaled
+bankTest.nn[, common_num]  <- test_scaled
+
+# Fitting neural network (1 hidden layer with 5 nodes)
+set.seed(42)
+nn.model <- nnet(
+  y ~ ., data = bankTrain.nn,
+  size = 5, decay = 0.001,
+  maxit = 200, trace = FALSE
+)
+
+# Predicting teh probabilities on test data
+nn.prob <- predict(nn.model, newdata = bankTest.nn, type = "raw")
+
+# ROC and AUC
+roc.nn <- prediction(nn.prob, bankTest.nn$y)
+roc.perf.nn <- performance(roc.nn, "tpr", "fpr")
+
+plot(roc.perf.nn, col = "darkgreen", lwd = 2,
+     main = "ROC Curve – Neural Network (1 hidden layer, 5 nodes)")
+abline(a = 0, b = 1, lty = 2)
+
+nn_auc <- performance(roc.nn, "auc")@y.values[[1]]
+nn_auc
+
+
+
+```
+
+**Why:**\
+To extend our replication of Moro et al. (2014) and explore a more flexible, nonlinear learning method, we implemented a simple feed-forward **Neural Network**.\
+This model helps us test whether adding nonlinear transformations of the predictors can improve prediction accuracy beyond linear and regularized models such as Ridge, LASSO, and SVM.
+
+Because neural networks are sensitive to the scale of inputs, I first **standardized all numeric variables** using the training data’s mean and standard deviation, then applied the same scaling to the test data.\
+Then I used one hidden layer with five neurons (`size = 5`), logistic activation functions, and a small weight-decay penalty (`decay = 0.001`) to prevent overfitting.\
+This architecture is similar in spirit to the multilayer-perceptron setup used in *Moro et al. (2014)* but simplified for interpretability and computational efficiency.
+
+**Interpretation of results:**\
+The fitted Neural Network achieved an **AUC = 0.939**, the highest among all models in our study.\
+This indicates excellent discriminative power, slightly higher than the Ridge, LASSO, and SVM models (AUC ≈ 0.93).\
+The small performance gain suggests that the dataset contains minor nonlinear interactions, which the network can capture through its hidden layer.\
+However, the improvement is modest, reinforcing that the underlying relationships in the bank-marketing data are largely linear.
+
+Consistent with *Moro et al. (2014)*, we can conclude that while neural networks can achieve top-tier predictive accuracy, they sacrifice interpretability.\
+For practical applications such as marketing campaign planning, simpler models like logistic regression remain more transparent and easier to explain, whereas neural networks offer only incremental accuracy benefits.
+
+```{r}
+auc <- c(0.789, 0.929, 0.932, 0.907, 0.921, 0.939)
+models <- c("Logistic", "Ridge", "LASSO", "LDA", "SVM", "Neural Net")
+barplot(auc, names.arg=models, col="steelblue",
+        ylim=c(0.75,1), ylab="AUC", main="Model AUC Comparison")
+abline(h=0.93, col="red", lty=2)
+text(x=1:length(auc), y=auc+0.01, labels=round(auc,3))
+
+```

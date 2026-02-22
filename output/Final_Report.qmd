@@ -1,0 +1,557 @@
+---
+title: "Final_Report"
+format: html
+author: "Esha Teware & William Shields"
+date: today
+---
+
+
+```{r include=FALSE}
+library(tidyverse)
+library(boot)
+library(ROCR)
+library(glmnet)
+library(MASS)
+library(caret)
+library(class)
+library(e1071)
+library(nnet)
+library(tree)
+library(randomForest)
+```
+
+# Write up still work in progress, models are generally all fit. Some just need slight tuning or metrics output
+
+## Data Loading and Splitting for Train Test
+
+```{r}
+bank <- read_delim("../data/bank-additional-full.csv", delim = ";", show_col_types = FALSE) |>
+  janitor::clean_names() |>
+  mutate_if(is.character, as.factor) 
+```
+
+```{r}
+set.seed(42)
+split <- sample(seq_len(nrow(bank)), size = floor(0.8 * nrow(bank)))
+bankTrain <- bank[split, ]
+bankTest  <- bank[-split, ]
+```
+
+## EDA and Data overview
+
+This work is done, but I will add it in later. Only focusing on adding the models right now.
+
+## Logistic Regression Model
+
+### Baseline Model
+
+This model only uses variables similar to the ones used in the paper.
+
+```{r}
+bank_lr_paper <- glm(y ~ housing + loan + default + month + emp_var_rate +
+                       cons_price_idx + cons_conf_idx + euribor3m + nr_employed,
+                     data = bankTrain, family = binomial)
+summary(bank_lr_paper)
+```
+
+#### Cross-Validation of Baseline Model
+
+```{r}
+loss <- function(Y, pred_p){
+  mean((Y == 1 & pred_p < 0.5) | (Y == 0 & pred_p >= 0.5))
+}
+set.seed(42)
+bank_lr_paper_k_fold <- cv.glm(bankTrain, bank_lr_paper, cost = loss, K = 10)
+bank_lr_paper_k_fold$delta
+```
+
+#### Test Performance
+
+```{r}
+bankTest$pred_prob <- predict(bank_lr_paper, newdata = bankTest, type = "response")
+bankTest$pred_class <- ifelse(bankTest$pred_prob > 0.5, "yes", "no")
+table(bankTest$pred_class, bankTest$y)
+```
+
+#### ROC and AUC
+
+```{r}
+roc.predictions <- prediction(bankTest$pred_prob, bankTest$y)
+roc.perf <- performance(roc.predictions, "tpr", "fpr")
+plot(roc.perf, col = "blue", lwd = 2, main = "ROC Curve – Paper Logistic Model")
+abline(a = 0, b = 1, col = "black", lty = 2)
+paper_auc <- performance(roc.predictions, "auc")@y.values[[1]]
+paper_auc
+```
+
+### Extended Model
+
+The purpose of this model is to expand on the baseline using variables present in our dataset that are not mentioned or used by the paper. These predictors are more socio-demographic and campaign related than the primarily economic variables used in the baseline model.
+
+```{r}
+bank_lr_extended <- glm(y ~ job + marital + education + housing + loan +
+                          month + day_of_week + campaign + emp_var_rate +
+                          cons_price_idx + cons_conf_idx + euribor3m + nr_employed,
+                        data = bankTrain, family = binomial)
+summary(bank_lr_extended)
+```
+
+#### Test Performance
+
+```{r}
+bankTest$pred_prob_ext <- predict(bank_lr_extended, newdata = bankTest, type = "response")
+bankTest$pred_class_ext <- ifelse(bankTest$pred_prob_ext > 0.5, "yes", "no")
+table(bankTest$pred_class_ext, bankTest$y)
+```
+
+#### ROC and AUC
+
+```{r}
+roc.pred.ext <- prediction(bankTest$pred_prob_ext, bankTest$y)
+roc.perf.ext <- performance(roc.pred.ext, "tpr", "fpr")
+plot(roc.perf.ext, col = "green", lwd = 2, main = "ROC Curve – Extended Logistic")
+abline(a = 0, b = 1, col = "black", lty = 2)
+extended_auc <- performance(roc.pred.ext, "auc")@y.values[[1]]
+extended_auc
+```
+
+The extended model does not show a major improvement over the baseline (AUC of $0.7885$ vs $0.7895$). While some of the added predictors show as being significant the large number of predictors could be reduce to avoid an overly flexible model and any potential concerns of multicollinearity. To address this we will perform Ridge and LASSO regression and see if we gain any improvement.
+
+### Ridge and LASSO Regression
+
+```{r}
+
+# Combine data first so model.matrix creates consistent columns
+x_all <- model.matrix(y ~ .-duration, bank)[, -1]
+y_all <- ifelse(bank$y == "yes", 1, 0)
+
+# Use same split indices as before
+x_train <- x_all[split, ]
+x_test  <- x_all[-split, ]
+y_train <- y_all[split]
+y_test  <- y_all[-split]
+
+# Fit models
+ridge_cv <- cv.glmnet(x_train, y_train, alpha = 0, family = "binomial")
+lasso_cv <- cv.glmnet(x_train, y_train, alpha = 1, family = "binomial")
+
+# Predictions
+ridge_pred <- predict(ridge_cv, s = ridge_cv$lambda.min, newx = x_test, type = "response")
+lasso_pred <- predict(lasso_cv, s = lasso_cv$lambda.min, newx = x_test, type = "response")
+
+ridge_cv$lambda.min   
+lasso_cv$lambda.min
+
+# Evaluate AUC
+ridge_auc <- performance(prediction(ridge_pred, y_test), "auc")@y.values[[1]]
+lasso_auc <- performance(prediction(lasso_pred, y_test), "auc")@y.values[[1]]
+
+
+
+c(Ridge_AUC = ridge_auc, LASSO_AUC = lasso_auc)
+
+```
+
+The RIDGE and LASSO perform only slightly beter in terms of AUC to to the previous extended logistic regression. Our models fail to reach the AUC of $0.9$ seen in the paper. This is likely due to the difference in predictors between our dataset and the one used by the authors.
+
+## Decision Trees
+
+### Baseline Tree
+
+```{r}
+bank_tree_paper <- tree(y ~ housing + loan + default + month + emp_var_rate +
+                          cons_price_idx + cons_conf_idx + euribor3m + nr_employed,
+                        data = bankTrain)
+summary(bank_tree_paper)
+```
+
+```{r}
+plot(bank_tree_paper)
+text(bank_tree_paper, pretty = 0)
+```
+
+Due to the small amount of $Yes$ classifications in the dataset the tree algorithm decides that just classifying everything as $No$ is the best option. We will extend the model to avoid this.
+
+### Extended Tree
+
+```{r}
+
+bank_tree_extended <- tree(y ~ .-duration,
+
+                        data = bankTrain)
+summary(bank_tree_extended)
+```
+
+
+The extended tree using all predictors, minus $duration$, does improve over the baseline tree. However, it is still using very few variables. We will attempt to use a random forest to draw on more variables in the dataset.
+
+### Random Forest
+
+```{r}
+set.seed(42)
+bank_rf <- randomForest(y ~ .-duration,
+
+                        data = bankTrain, importance = TRUE)
+bank_rf
+```
+
+```{r}
+importance(bank_rf)
+```
+
+From these results we can see an improvement over the previous trees. The Out-Of-Bag error rate is at $10.19\%$. Though it is important to note the high class error rate for $yes$ of $0.72$. The Random Forest has greatly expanded the variables used in the classification process, $nr\_employed$ has been determined to be the least important variable in the classification process.
+
+#### AUC of Random Forest
+
+```{r}
+rf_auc_preds <- predict(bank_rf, newdata = bankTest, type = "prob")[,2]
+roc.predictions <- prediction(rf_auc_preds, bankTest$y)
+roc.perf <- performance(roc.predictions, "tpr", "fpr")
+plot(roc.perf, col = "blue", lwd = 2, main = "ROC Curve – Random Forest")
+abline(a = 0, b = 1, col = "black", lty = 2)
+rf_auc <- performance(roc.predictions, "auc")@y.values[[1]]
+rf_auc
+```
+
+The AUC of the tree model results in $0.802$.
+
+
+#### Test Prediction of Random Forest
+
+```{r}
+rf_preds <- predict(bank_rf, newdata = bankTest, type = "response")
+mean(rf_preds != bankTest$y)
+```
+
+
+
+The Out-Of-Bag estimation of error was very close to the test error rate. As the test misclassification rate was $10.28\%$
+
+### Comparison of Extended Tree and Random Forest
+
+```{r}
+table(rf_preds, bankTest$y)
+```
+
+```{r}
+extended_preds <- predict(bank_tree_extended, newdata = bankTest, type = "class")
+table(extended_preds, bankTest$y)
+```
+
+Overall the extended model tree and the random forest perform somewhat similarly, but the extended model appears to perform better than the random forest. Lets compute the AUC of the extended model tree for comparison's sake.
+
+### AUC of the Extended Tree
+
+```{r}
+extended_auc_preds <-  predict(bank_tree_extended, newdata = bankTest, type = "vector")[,2]
+roc.predictions <- prediction(extended_auc_preds, bankTest$y)
+roc.perf <- performance(roc.predictions, "tpr", "fpr")
+plot(roc.perf, col = "blue", lwd = 2, main = "ROC Curve – Extended Model Tree")
+abline(a = 0, b = 1, col = "black", lty = 2)
+rf_auc <- performance(roc.predictions, "auc")@y.values[[1]]
+rf_auc
+```
+
+The AUC of the Extended tree model is lower than the Random Forest at $0.769$.
+
+
+## LDA
+
+We run a simple LDA model to determine the effectiveness of a generative classification over the discriminant logistic model
+
+
+
+```{r}
+
+# Fit LDA
+lda_fit <- lda(y ~ . - duration, data = bankTrain)
+
+# Full prediction object
+lda_out <- predict(lda_fit, newdata = bankTest)
+
+# Accuracy from class labels
+lda_acc <- mean(lda_out$class == bankTest$y)
+
+# AUC from posterior probabilities
+lda_prob <- lda_out$posterior[, "yes"]   
+roc_lda  <- prediction(lda_prob, bankTest$y)
+auc_lda  <- performance(roc_lda, "auc")@y.values[[1]]
+
+# Print both metrics
+c(LDA_Accuracy = lda_acc, LDA_AUC = auc_lda)
+
+```
+
+The LDA model shows a higher accuracy of prediction. However, we get a warning about multicollinearity of the data. This likely stems from the economic predictors being very related to one another. The overall accuracy is also not significantly higher than the general data split of the classes. We will continue to explore other models.
+
+## KNN
+
+```{r}
+# Creating consistent matrices
+x_all <- model.matrix(y ~ .-duration, data = bank)[, -1]
+y_all <- ifelse(bank$y == "yes", 1, 0)
+
+x_train <- x_all[split, ]
+x_test  <- x_all[-split, ]
+y_train <- y_all[split]
+y_test  <- y_all[-split]
+
+# Scale using training mean and SD
+x_train_scaled <- scale(x_train)
+x_test_scaled  <- scale(x_test,
+                        center = attr(x_train_scaled, "scaled:center"),
+                        scale  = attr(x_train_scaled, "scaled:scale"))
+
+# Trying several k values
+set.seed(42)
+k_values <- c(3, 5, 7, 9, 11)
+knn_acc <- sapply(k_values, function(k) {
+  pred <- knn(train = x_train_scaled, test = x_test_scaled, cl = y_train, k = k)
+  mean(pred == y_test)
+})
+knn_acc
+
+# Select best k
+best_k <- k_values[which.max(knn_acc)]
+best_k
+
+# Final model with best k
+knn_pred <- knn(train = x_train_scaled, test = x_test_scaled, cl = y_train, k = best_k)
+
+
+# Convert to numeric for ROC
+knn_prob <- as.numeric(knn_pred)
+roc.knn <- prediction(knn_prob, y_test)
+roc.perf.knn <- performance(roc.knn, "tpr", "fpr")
+plot(roc.perf.knn, col = "purple", lwd = 2,
+     main = paste("ROC Curve – KNN (k =", best_k, ")"))
+abline(a = 0, b = 1, col = "gray", lty = 2)
+knn_auc <- performance(roc.knn, "auc")@y.values[[1]]
+knn_auc
+
+
+```
+
+The KNN performs well in terms of overall accuracy, but this can likely be attributed to the overall class imbalance of the dataset. The AUC of $0.6176$ is quite poor and shows that KNN is not suitable for the high dimensionality of our data.
+
+## SVM
+
+```{r include=FALSE}
+#Ensuring response is a factor
+bankTrain$y <- as.factor(bankTrain$y)
+bankTest$y  <- as.factor(bankTest$y)
+```
+
+
+
+```{r}
+# Linear Kernel SVM
+
+# Fitting linear SVM with probability output
+svm.lin <- svm(
+  y ~ .-duration, data = bankTrain,
+  kernel = "linear",
+  cost = 1,
+  probability = TRUE
+)
+
+summary(svm.lin)
+
+# Prediction on test data
+svm.lin.pred <- predict(svm.lin, newdata = bankTest, probability = TRUE)
+svm.lin.prob <- attr(svm.lin.pred, "probabilities")[, "yes"]
+
+# ROC and AUC
+roc.lin <- prediction(svm.lin.prob, bankTest$y)
+roc.perf.lin <- performance(roc.lin, "tpr", "fpr")
+
+plot(
+  roc.perf.lin, col = "blue", lwd = 2,
+  main = "ROC Curve – SVM (Linear)"
+)
+abline(a = 0, b = 1, lty = 2)
+
+svm_lin_auc <- performance(roc.lin, "auc")@y.values[[1]]
+svm_lin_auc
+
+```
+
+The linear SVM results in an AUC of $0.638$, this is significantly lower than the value of the AUC seen in the paper. We will attempt to tune the SVM to obtain closer results.
+
+### Tuning the SVM
+
+```{r}
+set.seed(42)
+#Smaller sample used for ease of compute
+bankTrain_sub <- bankTrain[sample(nrow(bankTrain), 5000), ]
+
+svm.tune <- tune(
+  svm,
+  y ~ .-duration, data = bankTrain_sub,
+  ranges = list(
+    kernel = c("linear", "radial"),
+    cost   = c(0.1, 1, 10)
+  )
+)
+
+summary(svm.tune)
+svm.tune$best.parameters
+
+```
+
+### Final SVM Model
+
+```{r}
+best.svm <- svm(
+  y ~ .-duration, data = bankTrain,
+  kernel = "radial",
+  cost = 10,
+  probability = TRUE
+)
+
+svm.pred <- predict(best.svm, newdata = bankTest, probability = TRUE)
+svm.prob <- attr(svm.pred, "probabilities")[, "yes"]
+
+roc.svm <- prediction(svm.prob, bankTest$y)
+roc.perf.svm <- performance(roc.svm, "tpr", "fpr")
+
+plot(
+  roc.perf.svm, col = "red", lwd = 2,
+  main = "ROC Curve – Tuned SVM (Radial, cost = 10)"
+)
+abline(a = 0, b = 1, lty = 2)
+
+svm_auc <- performance(roc.svm, "auc")@y.values[[1]]
+svm_auc
+```
+
+The tuned SVM model performs better than untuned, but still performs worse than the Ridge and LASSO Regression logistic models.
+
+## Neural Network
+
+```{r}
+# Make working copies (no re-splitting)
+bankTrain.nn <- bankTrain
+bankTest.nn  <- bankTest
+
+# Identify numeric predictors common to both data sets
+num_train <- names(which(sapply(bankTrain.nn, is.numeric)))
+num_test  <- names(which(sapply(bankTest.nn, is.numeric)))
+common_num <- intersect(num_train, num_test)
+
+# Scaling numeric predictors using training mean and sd
+train_scaled <- scale(bankTrain.nn[, common_num])
+test_scaled  <- scale(bankTest.nn[, common_num],
+                      center = attr(train_scaled, "scaled:center"),
+                      scale  = attr(train_scaled, "scaled:scale"))
+
+bankTrain.nn[, common_num] <- train_scaled
+bankTest.nn[, common_num]  <- test_scaled
+
+# Fitting neural network (1 hidden layer with 5 nodes)
+set.seed(42)
+nn.model <- nnet(
+  y ~ .-duration, data = bankTrain.nn,
+  size = 5, decay = 0.001,
+  maxit = 200, trace = FALSE
+)
+
+# Predicting teh probabilities on test data
+nn.prob <- predict(nn.model, newdata = bankTest.nn, type = "raw")
+
+# ROC and AUC
+roc.nn <- prediction(nn.prob, bankTest.nn$y)
+roc.perf.nn <- performance(roc.nn, "tpr", "fpr")
+
+plot(roc.perf.nn, col = "darkgreen", lwd = 2,
+     main = "ROC Curve – Neural Network (1 hidden layer, 5 nodes)")
+abline(a = 0, b = 1, lty = 2)
+
+nn_auc <- performance(roc.nn, "auc")@y.values[[1]]
+nn_auc
+
+```
+
+The AUC for the Neural Network is inline with the values seen for the logistic regression.
+
+## Combined Model Performance Summary
+
+
+
+```{r}
+
+# Helper
+
+calc_rmse <- function(prob, actual) sqrt(mean((actual - prob)^2))
+
+# True response (numeric)
+
+actual_num <- ifelse(bankTest$y == "yes", 1, 0)
+
+# RMSE values 
+
+rmse_paper <- calc_rmse(bankTest$pred_prob, actual_num)
+rmse_ext   <- calc_rmse(bankTest$pred_prob_ext, actual_num)
+rmse_ridge <- calc_rmse(ridge_pred, actual_num)
+rmse_lasso <- calc_rmse(lasso_pred, actual_num)
+rmse_tree  <- calc_rmse(predict(bank_tree_extended, newdata = bankTest, type = "vector")[, 2], actual_num)
+rmse_rf    <- calc_rmse(predict(bank_rf, newdata = bankTest, type = "prob")[, "yes"], actual_num)
+rmse_lda   <- calc_rmse(predict(lda_fit, newdata = bankTest)$posterior[, 2], actual_num)
+rmse_knn   <- calc_rmse(ifelse(knn_pred == "yes", 1, 0), actual_num)
+rmse_svm   <- calc_rmse(svm.prob, actual_num)
+rmse_nn    <- calc_rmse(nn.prob, actual_num)
+
+# AUC values (already computed) 
+
+auc_values <- c(
+paper_auc,
+extended_auc,
+ridge_auc,
+lasso_auc,
+0.769,  # Decision Tree (Extended)
+0.802,  # Random Forest
+0.796,  # LDA
+0.6176, # KNN
+svm_auc,
+nn_auc
+)
+
+
+model_summary_auc_rmse <- tibble::tibble(
+Model = c(
+"Logistic (Paper)",
+"Logistic (Extended)",
+"Ridge Regression",
+"LASSO Regression",
+"Decision Tree (Extended)",
+"Random Forest",
+"LDA",
+"K-Nearest Neighbor",
+"SVM (Radial, Tuned)",
+"Neural Network"
+),
+RMSE = c(
+rmse_paper,
+rmse_ext,
+rmse_ridge,
+rmse_lasso,
+rmse_tree,
+rmse_rf,
+rmse_lda,
+rmse_knn,
+rmse_svm,
+rmse_nn
+),
+AUC = auc_values
+)
+
+# Display
+
+knitr::kable(
+model_summary_auc_rmse,
+digits = 4,
+caption = "Model Performance Summary (AUC and RMSE)"
+)
+
+```
+
