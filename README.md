@@ -6,7 +6,7 @@ Machine learning analysis of a Portuguese bank’s telemarketing campaign data t
 
 ## Project goals
 
-- Replicate and extend the approach from Moro et al. (2014) on bank telemarketing success prediction.
+- Replicate and extend the approach from Moro et al. (2014) on bank telemarketing success prediction
 - Benchmark multiple classification models on the same train/test split.
 - Report performance using **AUC** (primary) plus supporting metrics (RMSE / error rates where applicable).
 - Avoid **target leakage** by excluding `duration` from predictive models (call length is only known after contact). 
