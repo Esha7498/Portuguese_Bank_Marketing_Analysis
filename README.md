@@ -1,6 +1,6 @@
 # Portuguese Bank Marketing Analysis (Predictive Targeting)
 
-Machine learning analysis of a Portuguese bank’s telemarketing campaign data to predict whether a client will subscribe to a term deposit (`y ∈ {yes,no}`), and to compare model performance across several classical ML approaches. :contentReference[oaicite:0]{index=0}
+Machine learning analysis of a Portuguese bank’s telemarketing campaign data to predict whether a client will subscribe to a term deposit (`y ∈ {yes,no}`), and to compare model performance across several classical ML approaches. 
 
 ---
 
