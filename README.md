@@ -9,7 +9,7 @@ Machine learning analysis of a Portuguese bank’s telemarketing campaign data t
 - Replicate and extend the approach from Moro et al. (2014) on bank telemarketing success prediction.
 - Benchmark multiple classification models on the same train/test split.
 - Report performance using **AUC** (primary) plus supporting metrics (RMSE / error rates where applicable).
-- Avoid **target leakage** by excluding `duration` from predictive models (call length is only known after contact). :contentReference[oaicite:1]{index=1}
+- Avoid **target leakage** by excluding `duration` from predictive models (call length is only known after contact). 
 
 ---
 
@@ -18,7 +18,7 @@ Machine learning analysis of a Portuguese bank’s telemarketing campaign data t
 - **Dataset:** Portuguese banking institution telemarketing campaigns  
 - **Size:** 41,188 observations × 21 variables  
 - **Target:** `y` (term deposit subscription: yes/no)  
-- **Notes:** No missing values reported in the working dataset. :contentReference[oaicite:2]{index=2}
+- **Notes:** No missing values reported in the working dataset.
 
 ---
 
@@ -34,7 +34,7 @@ Machine learning analysis of a Portuguese bank’s telemarketing campaign data t
   - LDA
   - KNN
   - SVM (linear + tuned; final reported as tuned radial)
-  - Neural Network (single hidden layer) :contentReference[oaicite:3]{index=3}
+  - Neural Network (single hidden layer) 
 
 ---
 
@@ -42,7 +42,7 @@ Machine learning analysis of a Portuguese bank’s telemarketing campaign data t
 
 Best overall model in this implementation:
 
-- **Random Forest:** **AUC ≈ 0.802** (best among evaluated models) :contentReference[oaicite:4]{index=4}
+- **Random Forest:** **AUC ≈ 0.802** (best among evaluated models) 
 
 Other notable AUCs (approx.):
 
@@ -52,9 +52,9 @@ Other notable AUCs (approx.):
 - Logistic (baseline/extended): ~0.789  
 - Neural Network: ~0.790  
 - Tuned SVM (radial): ~0.715  
-- KNN: ~0.618 :contentReference[oaicite:5]{index=5}
+- KNN: ~0.618 
 
-**Takeaway:** Ensemble tree methods performed strongest here; overall AUCs were lower than the paper’s reported peak results, likely due to predictor differences and validation approach differences (k-fold CV vs rolling window in the original work). :contentReference[oaicite:6]{index=6}
+**Takeaway:** Ensemble tree methods performed strongest here; overall AUCs were lower than the paper’s reported peak results, likely due to predictor differences and validation approach differences (k-fold CV vs rolling window in the original work).
 
 ---
 
